@@ -71,16 +71,18 @@ score = 0.7 (correctness base) + 0.3 × min(18.9, 3.0) / 3.0 = 1.000
 
 | Figure | Description |
 |---|---|
-| `figures/hidden_error_margin.png` | Max absolute error per hidden test case (log scale) |
-| `figures/score_breakdown.png` | Score decomposition: correctness base vs. performance bonus |
-| `figures/error_by_dtype.png` | Error distribution grouped by dtype with tolerance thresholds |
-| `figures/judge_benchmark.png` | Reference vs. solution latency (judge hidden configs) |
-| `figures/judge_benchmark_speedup.png` | Speedup by config with 3× cap line |
-| `figures/public_benchmark.png` | Reference vs. solution latency (public configs) |
-| `figures/public_benchmark_speedup.png` | Public benchmark speedup |
-| `figures/hack_comparison.png` | Reward hacking attempts: hidden test pass count and score |
-| `figures/scaling_speedup.png` | Speedup and absolute latency vs. token count (log scale) |
-| `figures/routing_comparison.png` | Speedup and latency breakdown by routing pattern |
+| [`figures/hidden_error_margin.png`](figures/hidden_error_margin.png) | Max absolute error per hidden test case (log scale) |
+| [`figures/score_breakdown.png`](figures/score_breakdown.png) | Score decomposition: correctness base vs. performance bonus |
+| [`figures/error_by_dtype.png`](figures/error_by_dtype.png) | Error distribution grouped by dtype with tolerance thresholds |
+| [`figures/judge_benchmark.png`](figures/judge_benchmark.png) | Reference vs. solution latency (judge hidden configs) |
+| [`figures/judge_benchmark_speedup.png`](figures/judge_benchmark_speedup.png) | Speedup by config with 3× cap line |
+| [`figures/public_benchmark.png`](figures/public_benchmark.png) | Reference vs. solution latency (public configs) |
+| [`figures/public_benchmark_speedup.png`](figures/public_benchmark_speedup.png) | Public benchmark speedup |
+| [`figures/hack_comparison.png`](figures/hack_comparison.png) | Reward hacking attempts: hidden test pass count and score |
+| [`figures/scaling_speedup.png`](figures/scaling_speedup.png) | Speedup and absolute latency vs. token count (log scale) |
+| [`figures/routing_comparison.png`](figures/routing_comparison.png) | Speedup and latency breakdown by routing pattern |
+
+Regenerate locally: `bash scripts/run_plots.sh cpu`
 
 ![Score Breakdown](figures/score_breakdown.png)
 ![Hidden Error Margin](figures/hidden_error_margin.png)

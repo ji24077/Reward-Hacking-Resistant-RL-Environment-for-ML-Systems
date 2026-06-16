@@ -17,14 +17,12 @@ env/
 # uv
 .uv/
 
-# Logs and outputs
+# Logs and generated outputs (not README figures)
 logs/
+results/
 *.log
 
-# Figures and results (generated)
-figures/
-results/
-*.png
+# Ignore stray plot exports outside figures/
 *.pdf
 *.svg
 
