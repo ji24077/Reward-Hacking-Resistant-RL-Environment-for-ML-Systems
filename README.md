@@ -387,6 +387,8 @@ shape, and full benchmark timings in a JSON report (`--output`).
 | Shape-specific (T=64, D=64 only) | 10 / 24 | 0.0 (correctness gate) |
 | Tamper `reference.py` (then delete checksums) | — | TamperError before step 1 |
 
+A partial hidden pass — even 10 out of 24 — still yields score 0, because the correctness gate requires every hidden test to pass before any performance score is awarded.
+
 **Reward denial risks:**
 
 The main reward denial risk is floating-point tolerance. A correct
