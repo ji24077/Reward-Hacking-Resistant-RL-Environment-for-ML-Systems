@@ -3,7 +3,8 @@
 
 A correctness-gated RL environment where an agent must implement a sparse
 Mixture-of-Experts (MoE) forward pass that is numerically identical to a hidden
-oracle, then beat the oracle on GPU throughput. Inspired by ScatterMoE.
+oracle, then beat the oracle on GPU throughput. Inspired by
+[ScatterMoE](https://arxiv.org/abs/2403.08245) (Tan et al., COLM 2024).
 
 ---
 
@@ -175,19 +176,21 @@ Mixture-of-Experts (MoE) forward operator in PyTorch. The task is inspired by
 modern LLM inference and training systems, where MoE layers route each token to
 only a small subset of experts instead of activating all parameters.
 
-The environment is similar in spirit to a SWE-bench-style execution task, but
+The environment is similar in spirit to a
+[SWE-bench](https://github.com/swe-bench/SWE-bench)-style execution task, but
 focused on ML systems rather than general software engineering. The agent is
 given a small PyTorch codebase containing a slow but clear reference
 implementation of a top-k routed MoE layer. Its goal is to write a faster
 `moe_forward()` function that preserves the exact mathematical behavior of
 the reference under all routing conditions.
 
-The task is loosely inspired by *ScatterMoE* (Scattered Mixture-of-Experts
-Implementation), which studies efficient sparse MoE execution on GPUs by
-avoiding padding and unnecessary input copies. This environment does not ask
-the agent to reproduce the full paper, but uses the same core problem: exact
-sparse expert routing, correctness-preserving execution, and performance
-improvement after correctness is established.
+The task is loosely inspired by
+[*ScatterMoE*](https://arxiv.org/abs/2403.08245) (Scattered Mixture-of-Experts
+Implementation; Tan et al., COLM 2024), which studies efficient sparse MoE
+execution on GPUs by avoiding padding and unnecessary input copies. This
+environment does not ask the agent to reproduce the full paper, but uses the
+same core problem: exact sparse expert routing, correctness-preserving
+execution, and performance improvement after correctness is established.
 
 The function receives token activations `x [T, D]`, selected expert IDs
 `expert_ids [T, K]`, router weights `expert_weights [T, K]`, and expert MLP
@@ -416,8 +419,9 @@ memory layout, and numerical correctness simultaneously. This is the kind of
 task that separates a surface-level code generator from an agent that actually
 reasons about the computation.
 
-The environment connects to a real research paper. ScatterMoE showed that
-sparse MoE implementations can be meaningfully improved by avoiding padding and
+The environment connects to a real research paper.
+[ScatterMoE](https://arxiv.org/abs/2403.08245) showed that sparse MoE
+implementations can be meaningfully improved by avoiding padding and
 unnecessary input copies. This environment turns that systems-optimization
 problem into a judgeable RL task: the agent does not need to reproduce the full
 paper, but it has to solve the same core problem of sparse expert execution
@@ -466,6 +470,25 @@ the score, and so the score is comparable across different GPU models.
 The full environment is reproducible from a single `uv sync`. All random seeds,
 model shapes, routing distributions, and tolerance thresholds are deterministic.
 A clean evaluation always produces the same hidden test results.
+
+---
+
+## References
+
+1. Tan, S., Shen, Y., Panda, R., & Courville, A. (2024).
+   *Scattered Mixture-of-Experts Implementation.*
+   COLM 2024. [arXiv:2403.08245](https://arxiv.org/abs/2403.08245)
+
+2. Jimenez, C., Yang, J., Wettig, A., Yao, K., Pei, K., Press, O., & Narasimhan, K. (2024).
+   *SWE-bench: Can Language Models Resolve Real-World GitHub Issues?*
+   ICLR 2024. [OpenReview](https://openreview.net/forum?id=VTF8yNQM66)
+
+3. Shazeer, N., Mirhoseini, A., Maziarz, K., Davis, A., Dean, J., Le, Q. V., & Hinton, G. (2017).
+   *Outrageously Large Neural Networks: The Sparsely-Gated Mixture-of-Experts Layer.*
+   ICLR 2017. [OpenReview](https://openreview.net/forum?id=B1ckMDqlg)
+
+**Related concepts (not formal citations):** Goodhart's law (correctness hard gate
+design); optional Triton kernels ([Triton](https://github.com/triton-lang/triton)).
 
 ---
 
