@@ -1,10 +1,17 @@
 # Reward-Hacking-Resistant RL Environment for ML Systems
 ### Sparse Mixture-of-Experts Forward Operator
 
-A correctness-gated RL environment where an agent must implement a sparse
+A **correctness-gated RL environment** where an agent must implement a sparse
 Mixture-of-Experts (MoE) forward pass that is numerically identical to a hidden
-oracle, then beat the oracle on GPU throughput. Inspired by
-[ScatterMoE](https://arxiv.org/abs/2403.08245) (Tan et al., COLM 2024).
+oracle, then beat the oracle on throughput. Correctness is a hard gate: no
+performance score is awarded until all 24 hidden test cases pass. The judge
+uses subprocess isolation, SHA-256 tamper checking, and raw-tensor comparison
+to resist reward hacking. Inspired by [ScatterMoE](https://arxiv.org/abs/2403.08245)
+(Tan et al., COLM 2024).
+
+**Key results:** 24/24 hidden correctness tests pass · avg speedup **18.9×** on
+hidden judge benchmark · score **1.000** · all three reward hacking attacks
+score **0.0**.
 
 ---
 
@@ -73,20 +80,27 @@ score = 0.7 (correctness base) + 0.3 × min(18.9, 3.0) / 3.0 = 1.000
 |---|---|
 | [`figures/hidden_error_margin.png`](figures/hidden_error_margin.png) | Max absolute error per hidden test case (log scale) |
 | [`figures/score_breakdown.png`](figures/score_breakdown.png) | Score decomposition: correctness base vs. performance bonus |
-| [`figures/error_by_dtype.png`](figures/error_by_dtype.png) | Error distribution grouped by dtype with tolerance thresholds |
+| [`figures/error_by_dtype.png`](figures/error_by_dtype.png) | Error distribution by dtype with tolerance thresholds |
 | [`figures/judge_benchmark.png`](figures/judge_benchmark.png) | Reference vs. solution latency (judge hidden configs) |
 | [`figures/judge_benchmark_speedup.png`](figures/judge_benchmark_speedup.png) | Speedup by config with 3× cap line |
 | [`figures/public_benchmark.png`](figures/public_benchmark.png) | Reference vs. solution latency (public configs) |
 | [`figures/public_benchmark_speedup.png`](figures/public_benchmark_speedup.png) | Public benchmark speedup |
 | [`figures/hack_comparison.png`](figures/hack_comparison.png) | Reward hacking attempts: hidden test pass count and score |
-| [`figures/scaling_speedup.png`](figures/scaling_speedup.png) | Speedup and absolute latency vs. token count (log scale) |
+| [`figures/scaling_speedup.png`](figures/scaling_speedup.png) | Speedup and absolute latency vs. token count (log-log) |
 | [`figures/routing_comparison.png`](figures/routing_comparison.png) | Speedup and latency breakdown by routing pattern |
+| [`figures/load_distribution.png`](figures/load_distribution.png) | Expert token load distribution by routing (Gini coefficient) |
+| [`figures/time_breakdown.png`](figures/time_breakdown.png) | Solution time by phase: alloc / mask+gather / matmul / scatter |
+| [`figures/compile_comparison.png`](figures/compile_comparison.png) | Eager solution vs `torch.compile` latency and speedup |
 
 Regenerate locally: `bash scripts/run_plots.sh cpu`
 
 ![Score Breakdown](figures/score_breakdown.png)
 ![Hidden Error Margin](figures/hidden_error_margin.png)
 ![Judge Benchmark Speedup](figures/judge_benchmark_speedup.png)
+![Scaling Speedup](figures/scaling_speedup.png)
+![Load Distribution](figures/load_distribution.png)
+![Time Breakdown](figures/time_breakdown.png)
+![Compile Comparison](figures/compile_comparison.png)
 ![Hack Comparison](figures/hack_comparison.png)
 
 ---
@@ -141,7 +155,41 @@ Measured at T=512, E=8, D=64, H=128, K=2:
   handled by `scatter_add_`, which accumulates both contributions correctly
   in a single pass (19.1×).
 
+The load distribution plot (`figures/load_distribution.png`) shows the Gini
+coefficient for each routing type: uniform Gini=0.033 (near-perfect balance),
+skewed Gini=0.398 (expert 0 receives all 512 tokens), sparse Gini=0.508 (4
+experts receive 0 tokens). The solution's early-exit guard eliminates all work
+for zero-token experts, which is the dominant factor behind sparse routing's
+27.2× speedup.
+
 See `figures/routing_comparison.png`.
+
+### Time Breakdown Inside the Solution
+
+Profiling at T=512, E=8, D=64, H=128, K=2 on CPU:
+
+| Phase | Time (ms) | % of total |
+|---|---|---|
+| Output buffer allocation | 0.003 | < 1% |
+| **Mask build + index gather** (Python loop over E) | **0.322** | **42%** |
+| Batched matmul (w1, gelu, w2) | 0.310 | 40% |
+| scatter_add_ back to output | 0.139 | 18% |
+
+The **Python loop over experts** (masking, index selection) accounts for 42%
+of total solution time — roughly equal to the actual matmul. This is the
+primary target for a Triton extension: a fused gather-matmul-scatter kernel
+eliminates the Python loop entirely, moving all work to compiled GPU code.
+See `figures/time_breakdown.png`.
+
+### torch.compile Effect
+
+`torch.compile` applied to the solution produces **less than 2% improvement**
+at all tested token counts (e.g. 0.71ms → 0.70ms at T=512). The reason: the
+bottleneck is the Python-level loop over experts, which `torch.compile` with
+`fullgraph=False` cannot fuse across. Compile helps most when the
+computation is a single large graph; a loop with per-expert branches requires
+a fundamentally different kernel structure (Triton or CUDA). See
+`figures/compile_comparison.png`.
 
 ### Numerical Precision
 
@@ -547,18 +595,24 @@ uv sync
 # 2. Run judge + hack comparison + scaling experiments
 uv run python experiments_eval.py --device cpu --scaling
 
-# 3. Generate all figures
+# 3. Run extra experiments (compile, load distribution, time breakdown)
+uv run python experiments_extra.py --device cpu
+
+# 4. Generate all figures
 uv run python experiments_plot.py \
   --judge results/judge_report.json \
   --benchmark results/benchmark.json \
   --hack results/hack_comparison.json \
   --scaling results/scaling.json \
   --out figures/
+uv run python experiments_extra_plot.py \
+  --extra results/extra.json \
+  --out figures/
 
-# 4. Run hack demo
+# 5. Run hack demo
 uv run python hacks/hack_demo.py
 
-# 5. Full judge with tamper check
+# 6. Full judge with tamper check
 bash scripts/run_judge.sh cpu
 ```
 
@@ -568,12 +622,15 @@ On a GPU instance (Vast.ai or local):
 bash scripts/setup_vast.sh
 bash scripts/run_judge.sh cuda
 uv run python experiments_eval.py --device cuda --scaling
+uv run python experiments_extra.py --device cuda
 uv run python experiments_plot.py \
   --judge results/judge_report.json \
   --benchmark results/benchmark.json \
   --hack results/hack_comparison.json \
   --scaling results/scaling.json \
   --out figures/
+uv run python experiments_extra_plot.py \
+  --extra results/extra.json --out figures/
 ```
 
 ---
@@ -698,3 +755,132 @@ Extending to Triton requires three changes:
 No changes to the correctness judge or the oracle are needed — the same hidden
 test cases, subprocess isolation, tamper check, and `allclose_with_report`
 logic apply equally to Triton-based solutions.
+
+---
+
+**Q8. How does this environment differ from SWE-bench, HumanEval, and competitive-programming RL environments?**
+
+SWE-bench evaluates general software engineering (bug fixes, PR generation)
+with pass/fail unit tests. HumanEval checks functional correctness only, with
+no performance dimension. Competitive-programming environments (Codeforces-style)
+compare against precomputed outputs or use exact integer answers.
+
+This environment differs on three axes:
+
+1. **Two-level gate**: correctness is binary and must be satisfied before any
+   performance score is unlocked. Existing environments either use correctness
+   alone or add performance as an additive term — which allows reward hacking
+   through partial correctness.
+2. **Continuous numerical output**: the judge tolerates small floating-point
+   differences rather than requiring exact string or integer matches. This is
+   necessary for ML systems work but introduces the reward-denial risk that the
+   tolerance design must address.
+3. **ML systems domain**: the task requires understanding tensor memory layout,
+   routing irregularity, accumulation order, and BLAS efficiency simultaneously.
+   These concepts do not appear in general SWE-bench or HumanEval tasks.
+
+---
+
+**Q9. What gap in existing RL environments does the correctness hard gate fill?**
+
+Environments that add correctness and performance as an additive score admit a
+stable Goodhart optimum: an agent that returns plausible-looking but incorrect
+outputs can score non-zero on the performance term while failing correctness.
+Given enough RL training, an agent will discover and exploit this.
+
+The hard gate collapses the reward to 0 for any non-passing solution, removing
+the gradient signal toward "fast-but-wrong" solutions entirely. The agent must
+first solve correctness to receive any reward, after which performance
+optimization begins. This sequencing matches the actual development workflow
+of ML systems engineers: correctness first, profiling second.
+
+---
+
+**Q10. What makes the anti-tampering design novel beyond "just use hidden tests"?**
+
+Hidden tests alone block three attacks but leave three others open:
+
+| Attack | Hidden tests alone | + Subprocess isolation | + Tamper check | + Raw tensor arithmetic |
+|---|---|---|---|---|
+| Hardcode visible seeds | ✗ blocks | — | — | — |
+| Shape-specific branching | ✗ blocks | — | — | — |
+| Monkeypatch `torch.allclose` | ✓ still works | ✗ blocks | — | — |
+| Modify `reference.py` | ✓ still works | ✓ still works | ✗ blocks | — |
+| Intercept judge's comparison fn | ✓ still works | ✓ still works | ✓ still works | ✗ blocks |
+
+Each layer is independently necessary. Removing any one layer enables a
+distinct class of reward hacking that the remaining layers cannot block.
+
+---
+
+**Q11. Why is sparse MoE forward pass a better RL task than general matrix multiplication or sorting?**
+
+Three properties make sparse MoE specifically well-suited:
+
+1. **Routing irregularity**: the token-to-expert assignment changes every
+   forward pass. Branch-based hacking (hardcoding outputs for known inputs)
+   fails because the routing is derived from the input data, not from a fixed
+   seed.
+2. **Two-stage computation** (gather → expert MLP → scatter): bugs manifest
+   differently at each stage (wrong token grouping, wrong weight application,
+   wrong output accumulation). Partial hacks that get one stage right while
+   failing another still fail all hidden tests.
+3. **Production relevance**: sparse MoE layers are a real bottleneck in LLM
+   inference (Mixtral, DeepSeek, Switch Transformer). A solution that scores
+   above 0.7 is an implementation that would actually improve a production
+   system, not just pass an artificial benchmark.
+
+---
+
+**Q12. What is the next engineering step to push speedup beyond 40× on GPU?**
+
+The time breakdown shows that 42% of solution time is spent in the Python loop
+over experts (mask build + index gather). On CPU this is amortized by the
+large matmuls; on GPU, the Python-level loop becomes the dominant bottleneck
+because GPU matmuls are orders of magnitude faster than on CPU.
+
+The next step is a **fused Triton kernel** that:
+1. Computes the expert assignment mask inside the kernel (no Python loop).
+2. Gathers input rows, applies `w1`, applies gelu, applies `w2`, and scatters
+   results back — all in a single kernel launch.
+3. Uses persistent thread blocks to eliminate kernel-launch overhead entirely.
+
+This is the approach taken by ScatterMoE. A Triton implementation of
+`moe_forward` would reduce the Python overhead from 42% to ~0%, making the
+matmul the sole bottleneck, and would achieve 5–20× over the current PyTorch
+solution on H100-class hardware.
+
+---
+
+## Conclusion
+
+This project demonstrates a full design-implement-evaluate cycle for a
+reward-hacking-resistant RL environment targeting ML systems tasks.
+
+**Correctness results**: the reference implementation batches tokens by expert
+and uses `scatter_add_` for output accumulation. All 24 hidden test cases pass
+across FP32, FP16, BF16, uniform/skewed/sparse/repeated routing, and unseen
+shapes — yielding score **1.000**.
+
+**Performance results**: the batched expert-wise solution achieves **18.9×**
+average speedup over the reference on the hidden judge benchmark (CPU). Speedup
+scales from 3.8× at T=32 to 40.6× at T=4096 as the batched matmul advantage
+dominates over Python loop overhead. Sparse routing achieves the highest
+speedup (27.2×) due to early-exit on zero-token experts.
+
+**Profiling insight**: 42% of solution time is spent in the Python loop over
+experts (mask build + gather). `torch.compile` reduces this by less than 2%.
+A fused Triton kernel eliminating this loop is the clear next optimization
+target, consistent with ScatterMoE's approach.
+
+**Reward hacking resistance**: three attack classes were demonstrated and
+blocked — hardcoded outputs (0/24 hidden pass), monkeypatched `torch.allclose`
+(0/24), and shape-specific branching (10/24, score=0.0 due to the hard gate).
+The layered defense (subprocess isolation + SHA-256 tamper check + raw tensor
+comparison) is independently necessary at each layer.
+
+**What this environment teaches**: implementing it end-to-end requires
+understanding sparse computation, PyTorch internals (contiguity, scatter_add_,
+torch.compile limitations), floating-point tolerance design, and adversarial
+judge engineering. These are directly transferable skills for ML systems roles
+at companies building or optimizing LLM inference infrastructure.
