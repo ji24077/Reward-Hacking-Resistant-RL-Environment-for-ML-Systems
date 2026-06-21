@@ -635,62 +635,52 @@ uv run python experiments_extra_plot.py \
 
 ---
 
-Design Review Questions
+## Design Review Questions
 
-Q1. Reward Design
+### Q1. Reward Design
+
 An additive correctness-and-speed reward can give non-zero credit to fast but incorrect implementations. What policy failure does this create, and how does a binary correctness gate change the optimization landscape?
 
-Q2. Process Isolation
+### Q2. Process Isolation
+
 Suppose a submitted solution mutates global Python state during import. Why must hidden evaluation run the candidate implementation in a separate subprocess rather than inside the judge process?
 
-Q3. Integrity Failure Mode
+### Q3. Integrity Failure Mode
+
 Consider an agent that modifies the oracle or deletes the checksum baseline. Describe the judge behavior in each case and explain why a fail-closed integrity check matters.
 
-Q4. Numerical Correctness
+### Q4. Numerical Correctness
+
 A batched expert-wise implementation can be mathematically equivalent to a sequential oracle while producing slightly different floating-point outputs. What reward-denial risk does this create, and how should tolerances be calibrated?
 
-Q5. Routing Distribution
+### Q5. Routing Distribution
+
 At equal token counts, why can skewed or sparse routing outperform uniform routing in an expert-wise batched implementation?
 
-Q6. Evaluation Threat Model
-For each of the following defenses—hidden inputs, subprocess isolation, checksum verification, and raw-tensor comparison—identify one attack that becomes feasible if that defense is removed.
+### Q6. Evaluation Threat Model
 
-Q7. Environment Comparison
+For each of the following defenses---hidden inputs, subprocess isolation, checksum verification, and raw-tensor comparison---identify one attack that becomes feasible if that defense is removed.
+
+### Q7. Environment Comparison
+
 How does this environment differ from SWE-bench and HumanEval in terms of reward structure, numerical correctness, and ML-systems reasoning requirements?
 
-Q8. Kernel Extension
+### Q8. Kernel Extension
+
 Given that mask construction and index gathering dominate the optimized PyTorch implementation, outline the minimal changes needed to create a Triton-kernel track while preserving the existing correctness judge.
+
 ---
 
 ## Conclusion
 
-This project demonstrates a full design-implement-evaluate cycle for a
-reward-hacking-resistant RL environment targeting ML systems tasks.
+This project demonstrates a full design-implement-evaluate cycle for a reward-hacking-resistant RL environment targeting ML systems tasks.
 
-**Correctness results**: the reference implementation batches tokens by expert
-and uses `scatter_add_` for output accumulation. All 24 hidden test cases pass
-across FP32, FP16, BF16, uniform/skewed/sparse/repeated routing, and unseen
-shapes — yielding score **1.000**.
+**Correctness results**: the optimized solution batches tokens by expert and uses `scatter_add_` for output accumulation. All 24 hidden test cases pass across FP32, FP16, BF16, uniform/skewed/sparse/repeated routing, and unseen shapes --- yielding score **1.000**.
 
-**Performance results**: the batched expert-wise solution achieves **18.9×**
-average speedup over the reference on the hidden judge benchmark (CPU). Speedup
-scales from 3.8× at T=32 to 40.6× at T=4096 as the batched matmul advantage
-dominates over Python loop overhead. Sparse routing achieves the highest
-speedup (27.2×) due to early-exit on zero-token experts.
+**Performance results**: the batched expert-wise solution achieves **18.9x** average speedup over the reference on the hidden judge benchmark (CPU). Speedup scales from 3.8x at T=32 to 40.6x at T=4096 as the batched matmul advantage dominates over Python-loop overhead. Sparse routing achieves the highest speedup (27.2x) due to early exit on zero-token experts.
 
-**Profiling insight**: 42% of solution time is spent in the Python loop over
-experts (mask build + gather). `torch.compile` reduces this by less than 2%.
-A fused Triton kernel eliminating this loop is the clear next optimization
-target, consistent with ScatterMoE's approach.
+**Profiling insight**: 42% of solution time is spent in the Python loop over experts for mask construction and gathering. `torch.compile` reduces this by less than 2%. A fused Triton kernel that removes this loop is the clearest next optimization target and follows the direction suggested by ScatterMoE.
 
-**Reward hacking resistance**: three attack classes were demonstrated and
-blocked — hardcoded outputs (0/24 hidden pass), monkeypatched `torch.allclose`
-(0/24), and shape-specific branching (10/24, score=0.0 due to the hard gate).
-The layered defense (subprocess isolation + SHA-256 tamper check + raw tensor
-comparison) is independently necessary at each layer.
+**Reward-hacking resistance**: three attack classes were demonstrated and blocked: hardcoded outputs, monkeypatched `torch.allclose`, and shape-specific branching. The layered defense of subprocess isolation, SHA-256 tamper checks, hidden inputs, and raw-tensor comparison prevents each attack class from producing a non-zero reward.
 
-**What this environment teaches**: implementing it end-to-end requires
-understanding sparse computation, PyTorch internals (contiguity, scatter_add_,
-torch.compile limitations), floating-point tolerance design, and adversarial
-judge engineering. These are directly transferable skills for ML systems roles
-at companies building or optimizing LLM inference infrastructure.
+**What this environment teaches**: implementing and evaluating this environment requires sparse-computation reasoning, PyTorch tensor semantics, floating-point tolerance design, performance profiling, and adversarial judge engineering. These are directly relevant skills for ML systems and LLM-inference infrastructure work.
