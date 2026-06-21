@@ -669,6 +669,7 @@ How does this environment differ from SWE-bench and HumanEval in terms of reward
 
 Given that mask construction and index gathering dominate the optimized PyTorch implementation, outline the minimal changes needed to create a Triton-kernel track while preserving the existing correctness judge.
 
+
 ---
 
 ## Conclusion
