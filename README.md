@@ -635,221 +635,31 @@ uv run python experiments_extra_plot.py \
 
 ---
 
-## Questions
+Design Review Questions
 
-**Q1. Why is correctness a hard gate (score=0) rather than a soft penalty in the scoring formula? What failure mode does this prevent?**
+Q1. Reward Design
+An additive correctness-and-speed reward can give non-zero credit to fast but incorrect implementations. What policy failure does this create, and how does a binary correctness gate change the optimization landscape?
 
-A soft penalty would allow an agent to score partial credit by returning
-approximately-correct outputs (e.g. zeros, or a solution that is right for
-half the inputs and wrong for the other half). An agent trained under a
-soft-penalty reward can Goodhart: it learns to maximize the numerical score
-rather than to solve the task. The hard gate ensures there is no gradient
-signal toward reward unless the agent has genuinely solved correctness.
-Without the gate, an agent could learn "return plausible-looking activations"
-as a stable local optimum, even though such a solution is useless for
-production inference.
+Q2. Process Isolation
+Suppose a submitted solution mutates global Python state during import. Why must hidden evaluation run the candidate implementation in a separate subprocess rather than inside the judge process?
 
----
+Q3. Integrity Failure Mode
+Consider an agent that modifies the oracle or deletes the checksum baseline. Describe the judge behavior in each case and explain why a fail-closed integrity check matters.
 
-**Q2. Why does the judge run `solution.py` in a fresh subprocess rather than importing it directly? What attack does this block?**
+Q4. Numerical Correctness
+A batched expert-wise implementation can be mathematically equivalent to a sequential oracle while producing slightly different floating-point outputs. What reward-denial risk does this create, and how should tolerances be calibrated?
 
-If the judge imported `solution.py` in its own process, any monkeypatching
-done at module-import time inside `solution.py` would affect the judge's
-Python process. For example, an agent could write
-`torch.allclose = lambda *a, **kw: True` at the top of `solution.py`, which
-would replace the judge's correctness check with a function that always returns
-True. Running the hidden tests in a subprocess ensures that the judge's own
-Python environment is completely unaffected by any side effects in the agent's
-code. The subprocess terminates after returning JSON results, leaving the
-judge's process state clean.
+Q5. Routing Distribution
+At equal token counts, why can skewed or sparse routing outperform uniform routing in an expert-wise batched implementation?
 
----
+Q6. Evaluation Threat Model
+For each of the following defenses—hidden inputs, subprocess isolation, checksum verification, and raw-tensor comparison—identify one attack that becomes feasible if that defense is removed.
 
-**Q3. How does the tamper check prevent the agent from weakening the oracle, and what would happen if `judge/checksums.json` were deleted?**
+Q7. Environment Comparison
+How does this environment differ from SWE-bench and HumanEval in terms of reward structure, numerical correctness, and ML-systems reasoning requirements?
 
-`tamper_check.py` computes the SHA-256 hash of each protected file at judge
-startup and compares it against a baseline stored in `checksums.json`. If any
-file is modified — even by one byte — the check raises `TamperError` and the
-judge aborts with `score=0` before running any tests. This prevents an agent
-from replacing `reference.py` with a trivial function (e.g. returning zeros),
-which would make its own incorrect `moe_forward` appear correct.
-
-If `checksums.json` were deleted, the tamper check raises `TamperError`
-immediately with the message "Baseline checksums not found". The judge aborts
-with `score=0`. It does not silently regenerate the baseline, because
-regenerating from a tampered workspace would defeat the entire purpose of the
-check. Regeneration must be done explicitly by a trusted party via
-`python -m judge.tamper_check --regenerate`.
-
----
-
-**Q4. Why does `allclose_with_report()` avoid `torch.allclose` and use raw tensor arithmetic instead? Under what condition would this matter?**
-
-`torch.allclose` is a Python-level function that can be replaced at runtime:
-`torch.allclose = lambda a, b, **kw: True`. If the judge called `torch.allclose`
-directly, this substitution — made in the judge's own process before the
-subprocess isolation was added — would cause all correctness checks to pass
-regardless of the actual values. By implementing the comparison as
-`(abs_err <= atol + rtol * ref.abs()).all()` using raw tensor operations,
-the correctness check cannot be intercepted through Python attribute assignment.
-The raw arithmetic calls into compiled C++/CUDA code that cannot be replaced
-by the agent.
-
----
-
-**Q5. What is the reward denial risk from floating-point accumulation order, and how are the tolerances calibrated to avoid it?**
-
-A correct batched implementation (grouping tokens by expert and calling `mm`)
-accumulates values in a different order than the reference's sequential token
-loop. IEEE 754 floating-point arithmetic is not associative, so the two
-implementations can produce slightly different results even when both are
-mathematically correct. If tolerances were set too tight (e.g. `atol=0`),
-a correct solution would fail the correctness gate — reward denial.
-
-Tolerances are calibrated empirically: FP32 uses `atol=1e-5, rtol=1e-4`, which
-is consistent with PyTorch's own defaults for `allclose`. FP16 and BF16 use
-`atol=1e-2, rtol=1e-2` to account for the reduced mantissa precision of those
-formats. The judge also reports the exact max absolute and relative error for
-every test case, so tolerance failures are immediately diagnosable rather than
-opaque.
-
----
-
-**Q6. Why does skewed routing produce a higher speedup than uniform routing, even at the same total token count?**
-
-In skewed routing, one expert receives the majority of tokens (e.g. ~80% of
-T=512 tokens → ~410 tokens for expert 0, ~15 tokens for each remaining expert).
-The batched solution builds a single `mm(x_expert[410, D], w1[e].T)` call for
-the dominant expert — a large, GPU-efficient matmul. The remaining experts
-either get small batches or are skipped entirely via the `if not mask.any():
-continue` guard. The reference loops over all T tokens and all K experts
-regardless of routing balance, doing K scalar dot-products per token with no
-opportunity to exploit the concentrated load.
-
-Uniform routing distributes tokens evenly (~64 per expert at T=512, E=8),
-giving each expert a medium-sized batch. This is still faster than the
-reference's per-token loop, but the per-expert batch is smaller and the GPU
-efficiency of each individual `mm` call is lower than the single large call
-that skewed routing enables.
-
----
-
-**Q7. How would you extend this environment to evaluate an agent's ability to write a Triton kernel rather than a PyTorch solution?**
-
-The existing judge already accepts any `moe_forward(x, expert_ids, ...)` that
-returns the correct tensor — it does not inspect how the computation is done.
-Extending to Triton requires three changes:
-
-1. **Dependency**: add `triton` to `pyproject.toml` so the agent's environment
-   includes it. Triton is CUDA-only, so the judge must enforce
-   `--device cuda` for the Triton track.
-2. **Prompt**: update `prompts/task.md` to tell the agent it should write a
-   Triton kernel for the compute-intensive parts. Add an example import
-   (`import triton`, `import triton.language as tl`) and a skeleton
-   `@triton.jit` function to lower the entry barrier.
-3. **Scoring sensitivity**: raise the speedup cap from 3× to a higher value
-   (e.g. 10×), or use a steeper curve, because a well-written Triton kernel
-   can achieve 5–20× over the PyTorch reference on modern NVIDIA GPUs.
-   The scoring formula would become `0.3 * min(speedup, 10.0) / 10.0`.
-
-No changes to the correctness judge or the oracle are needed — the same hidden
-test cases, subprocess isolation, tamper check, and `allclose_with_report`
-logic apply equally to Triton-based solutions.
-
----
-
-**Q8. How does this environment differ from SWE-bench, HumanEval, and competitive-programming RL environments?**
-
-SWE-bench evaluates general software engineering (bug fixes, PR generation)
-with pass/fail unit tests. HumanEval checks functional correctness only, with
-no performance dimension. Competitive-programming environments (Codeforces-style)
-compare against precomputed outputs or use exact integer answers.
-
-This environment differs on three axes:
-
-1. **Two-level gate**: correctness is binary and must be satisfied before any
-   performance score is unlocked. Existing environments either use correctness
-   alone or add performance as an additive term — which allows reward hacking
-   through partial correctness.
-2. **Continuous numerical output**: the judge tolerates small floating-point
-   differences rather than requiring exact string or integer matches. This is
-   necessary for ML systems work but introduces the reward-denial risk that the
-   tolerance design must address.
-3. **ML systems domain**: the task requires understanding tensor memory layout,
-   routing irregularity, accumulation order, and BLAS efficiency simultaneously.
-   These concepts do not appear in general SWE-bench or HumanEval tasks.
-
----
-
-**Q9. What gap in existing RL environments does the correctness hard gate fill?**
-
-Environments that add correctness and performance as an additive score admit a
-stable Goodhart optimum: an agent that returns plausible-looking but incorrect
-outputs can score non-zero on the performance term while failing correctness.
-Given enough RL training, an agent will discover and exploit this.
-
-The hard gate collapses the reward to 0 for any non-passing solution, removing
-the gradient signal toward "fast-but-wrong" solutions entirely. The agent must
-first solve correctness to receive any reward, after which performance
-optimization begins. This sequencing matches the actual development workflow
-of ML systems engineers: correctness first, profiling second.
-
----
-
-**Q10. What makes the anti-tampering design novel beyond "just use hidden tests"?**
-
-Hidden tests alone block three attacks but leave three others open:
-
-| Attack | Hidden tests alone | + Subprocess isolation | + Tamper check | + Raw tensor arithmetic |
-|---|---|---|---|---|
-| Hardcode visible seeds | ✗ blocks | — | — | — |
-| Shape-specific branching | ✗ blocks | — | — | — |
-| Monkeypatch `torch.allclose` | ✓ still works | ✗ blocks | — | — |
-| Modify `reference.py` | ✓ still works | ✓ still works | ✗ blocks | — |
-| Intercept judge's comparison fn | ✓ still works | ✓ still works | ✓ still works | ✗ blocks |
-
-Each layer is independently necessary. Removing any one layer enables a
-distinct class of reward hacking that the remaining layers cannot block.
-
----
-
-**Q11. Why is sparse MoE forward pass a better RL task than general matrix multiplication or sorting?**
-
-Three properties make sparse MoE specifically well-suited:
-
-1. **Routing irregularity**: the token-to-expert assignment changes every
-   forward pass. Branch-based hacking (hardcoding outputs for known inputs)
-   fails because the routing is derived from the input data, not from a fixed
-   seed.
-2. **Two-stage computation** (gather → expert MLP → scatter): bugs manifest
-   differently at each stage (wrong token grouping, wrong weight application,
-   wrong output accumulation). Partial hacks that get one stage right while
-   failing another still fail all hidden tests.
-3. **Production relevance**: sparse MoE layers are a real bottleneck in LLM
-   inference (Mixtral, DeepSeek, Switch Transformer). A solution that scores
-   above 0.7 is an implementation that would actually improve a production
-   system, not just pass an artificial benchmark.
-
----
-
-**Q12. What is the next engineering step to push speedup beyond 40× on GPU?**
-
-The time breakdown shows that 42% of solution time is spent in the Python loop
-over experts (mask build + index gather). On CPU this is amortized by the
-large matmuls; on GPU, the Python-level loop becomes the dominant bottleneck
-because GPU matmuls are orders of magnitude faster than on CPU.
-
-The next step is a **fused Triton kernel** that:
-1. Computes the expert assignment mask inside the kernel (no Python loop).
-2. Gathers input rows, applies `w1`, applies gelu, applies `w2`, and scatters
-   results back — all in a single kernel launch.
-3. Uses persistent thread blocks to eliminate kernel-launch overhead entirely.
-
-This is the approach taken by ScatterMoE. A Triton implementation of
-`moe_forward` would reduce the Python overhead from 42% to ~0%, making the
-matmul the sole bottleneck, and would achieve 5–20× over the current PyTorch
-solution on H100-class hardware.
-
+Q8. Kernel Extension
+Given that mask construction and index gathering dominate the optimized PyTorch implementation, outline the minimal changes needed to create a Triton-kernel track while preserving the existing correctness judge.
 ---
 
 ## Conclusion
